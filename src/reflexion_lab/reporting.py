@@ -20,11 +20,25 @@ def failure_breakdown(records: list[RunRecord]) -> dict:
     grouped: dict[str, Counter] = defaultdict(Counter)
     for record in records:
         grouped[record.agent_type][record.failure_mode] += 1
+        grouped["overall"][record.failure_mode] += 1
     return {agent: dict(counter) for agent, counter in grouped.items()}
 
 def build_report(records: list[RunRecord], dataset_name: str, mode: str = "mock") -> ReportPayload:
     examples = [{"qid": r.qid, "agent_type": r.agent_type, "gold_answer": r.gold_answer, "predicted_answer": r.predicted_answer, "is_correct": r.is_correct, "attempts": r.attempts, "failure_mode": r.failure_mode, "reflection_count": len(r.reflections)} for r in records]
-    return ReportPayload(meta={"dataset": dataset_name, "mode": mode, "num_records": len(records), "agents": sorted({r.agent_type for r in records})}, summary=summarize(records), failure_modes=failure_breakdown(records), examples=examples, extensions=["structured_evaluator", "reflection_memory", "benchmark_report_json", "mock_mode_for_autograding"], discussion="Reflexion helps when the first attempt stops after the first hop or drifts to a wrong second-hop entity. The tradeoff is higher attempts, token cost, and latency. In a real report, students should explain when the reflection memory was useful, which failure modes remained, and whether evaluator quality limited gains.")
+    discussion = (
+        "Reflexion giúp cải thiện câu trả lời khi lần thử đầu tiên dừng lại sau bước đầu tiên (hop đầu) hoặc bị lệch sang một thực thể sai ở bước thứ hai (entity drift). "
+        "Thử nghiệm này so sánh mô hình cơ sở ReAct chạy một lần với tác nhân Reflexion chạy nhiều lần, từ đó báo cáo phản ánh "
+        "sự đánh đổi giữa độ chính xác và chi phí tài nguyên. Các dạng lỗi (failure modes) chính cần xem xét bao gồm: suy luận đa bước chưa hoàn thiện (incomplete multi-hop reasoning), "
+        "lệch thực thể khi đi theo đoạn văn bổ trợ sai (entity drift), và câu trả lời cuối cùng bị sai mặc dù có vẻ hợp lý nhưng không được chứng thực bởi ngữ cảnh. "
+        "Reflexion có thể khắc phục một số lỗi này bằng cách chuyển đổi phản hồi từ bộ đánh giá (evaluator) thành chiến thuật hành động cụ thể tiếp theo, tuy nhiên nó cũng làm tăng số lần thử, lượng token tiêu thụ và độ trễ (latency)."
+    )
+    extensions = [
+        "structured_evaluator",
+        "reflection_memory",
+        "benchmark_report_json",
+        "mock_mode_for_autograding",
+    ]
+    return ReportPayload(meta={"dataset": dataset_name, "mode": mode, "num_records": len(records), "agents": sorted({r.agent_type for r in records})}, summary=summarize(records), failure_modes=failure_breakdown(records), examples=examples, extensions=extensions, discussion=discussion)
 
 def save_report(report: ReportPayload, out_dir: str | Path) -> tuple[Path, Path]:
     out_dir = Path(out_dir)
@@ -36,32 +50,32 @@ def save_report(report: ReportPayload, out_dir: str | Path) -> tuple[Path, Path]
     react = s.get("react", {})
     reflexion = s.get("reflexion", {})
     delta = s.get("delta_reflexion_minus_react", {})
-    ext_lines = "\n".join(f"- {item}" for item in report.extensions)
-    md = f"""# Lab 16 Benchmark Report
+    ext_lines = "\n".join(f"- {item}" for item in report.extensions) or "Không có"
+    md = f"""# Báo cáo Đánh giá Hiệu năng Lab 16
 
-## Metadata
-- Dataset: {report.meta['dataset']}
-- Mode: {report.meta['mode']}
-- Records: {report.meta['num_records']}
-- Agents: {', '.join(report.meta['agents'])}
+## Thông tin chung (Metadata)
+- Bộ dữ liệu (Dataset): {report.meta['dataset']}
+- Chế độ chạy (Mode): {report.meta['mode']}
+- Số lượng bản ghi (Records): {report.meta['num_records']}
+- Các Agent: {', '.join(report.meta['agents'])}
 
-## Summary
-| Metric | ReAct | Reflexion | Delta |
+## Kết quả tóm tắt (Summary)
+| Chỉ số (Metric) | ReAct | Reflexion | Chênh lệch (Delta) |
 |---|---:|---:|---:|
-| EM | {react.get('em', 0)} | {reflexion.get('em', 0)} | {delta.get('em_abs', 0)} |
-| Avg attempts | {react.get('avg_attempts', 0)} | {reflexion.get('avg_attempts', 0)} | {delta.get('attempts_abs', 0)} |
-| Avg token estimate | {react.get('avg_token_estimate', 0)} | {reflexion.get('avg_token_estimate', 0)} | {delta.get('tokens_abs', 0)} |
-| Avg latency (ms) | {react.get('avg_latency_ms', 0)} | {reflexion.get('avg_latency_ms', 0)} | {delta.get('latency_abs', 0)} |
+| Tỉ lệ khớp chính xác (EM) | {react.get('em', 0)} | {reflexion.get('em', 0)} | {delta.get('em_abs', 0)} |
+| Số lần thử trung bình (Avg attempts) | {react.get('avg_attempts', 0)} | {reflexion.get('avg_attempts', 0)} | {delta.get('attempts_abs', 0)} |
+| Ước tính token trung bình (Avg token estimate) | {react.get('avg_token_estimate', 0)} | {reflexion.get('avg_token_estimate', 0)} | {delta.get('tokens_abs', 0)} |
+| Độ trễ trung bình (Avg latency - ms) | {react.get('avg_latency_ms', 0)} | {reflexion.get('avg_latency_ms', 0)} | {delta.get('latency_abs', 0)} |
 
-## Failure modes
+## Phân tích các dạng lỗi (Failure modes)
 ```json
 {json.dumps(report.failure_modes, indent=2)}
 ```
 
-## Extensions implemented
+## Các phần mở rộng đã triển khai (Extensions implemented)
 {ext_lines}
 
-## Discussion
+## Thảo luận (Discussion)
 {report.discussion}
 """
     md_path.write_text(md, encoding="utf-8")
